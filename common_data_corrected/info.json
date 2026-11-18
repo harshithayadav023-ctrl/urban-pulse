@@ -1,0 +1,23 @@
+{
+  "target": "1 = late, 0 = on time",
+  "model_start": "2026-07-01",
+  "train_end": "2026-10-01",
+  "test_end": "2026-11-01",
+  "data_as_of": "2026-11-10 12:07:25+00:00",
+  "use_department": false,
+  "use_team": false,
+  "min_category_count": 25,
+  "n_train": 44195,
+  "n_test": 16971,
+  "n_features": 92,
+  "late_rate_train": 0.23106686276728136,
+  "late_rate_test": 0.2754109952271522,
+  "fingerprint_X_train": "77f5401dcb4bd7202c8c0636d2246a8a",
+  "fingerprint_y_train": "930e256fc0936108a555d6faf141727a",
+  "versions": {
+    "python": "3.13.9",
+    "pandas": "2.3.3",
+    "numpy": "2.3.5",
+    "sklearn": "1.7.2"
+  }
+}
