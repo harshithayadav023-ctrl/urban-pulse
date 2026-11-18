@@ -13,19 +13,40 @@ from pydantic import BaseModel
 # --------------------------------------------------
 # 1. PROJECT FILE LOCATIONS
 # --------------------------------------------------
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
+import joblib
+import numpy as np
+import pandas as pd
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from huggingface_hub import hf_hub_download
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
-MODEL_PATH = PROJECT_DIR / "models" / "harshitha_random_forest.pkl"
+MODEL_FILENAME = "harshitha_random_forest.pkl"
+HF_REPO_ID = "Sdc2026/urbanpulse-random-forest"
+
+LOCAL_MODEL_PATH = PROJECT_DIR / "models" / MODEL_FILENAME
 PREP_PATH = PROJECT_DIR / "common_data_corrected" / "prep_info.pkl"
 PRIORITY_PATH = PROJECT_DIR / "outputs" / "clustering_prioritization_results.csv"
 
 # --------------------------------------------------
 # 2. LOAD MODEL AND PREPROCESSING INFORMATION
 # --------------------------------------------------
-
-if not MODEL_PATH.exists():
-    raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
+if LOCAL_MODEL_PATH.exists():
+    MODEL_PATH = LOCAL_MODEL_PATH
+else:
+    MODEL_PATH = Path(
+        hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=MODEL_FILENAME,
+            repo_type="model"
+        )
+    )
 
 if not PREP_PATH.exists():
     raise FileNotFoundError(f"Preprocessing file not found: {PREP_PATH}")
@@ -39,6 +60,8 @@ feature_cols = prep_info["feature_cols"]
 fill_values = prep_info["fill_values"]
 keep_categories = prep_info["keep_categories"]
 model_columns = prep_info["columns"]
+
+
 
 # --------------------------------------------------
 # 3. CREATE FASTAPI APPLICATION
