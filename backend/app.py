@@ -144,8 +144,11 @@ def preprocess_input(data: ComplaintInput):
             fill_values[col]
         )
 
-    # Fill missing categorical values
+    
+    # Fill missing categorical values and match categories
+    # without considering uppercase/lowercase differences.
     for col in cat_cols:
+
         row[col] = (
             row[col]
             .fillna("Unknown")
@@ -153,10 +156,26 @@ def preprocess_input(data: ComplaintInput):
             .str.strip()
         )
 
-        # Match the rare-category handling during training
+        # Categories saved during training
         allowed = keep_categories[col]
 
-        if row.loc[0, col] not in allowed:
+        # Create a case-insensitive lookup while preserving
+        # the original spelling used during model training.
+        category_lookup = {
+            str(category).strip().casefold(): category
+            for category in allowed
+        }
+
+        input_value = row.loc[0, col]
+
+        # Match the input to its original training category
+        matched_category = category_lookup.get(
+            str(input_value).strip().casefold()
+        )
+
+        if matched_category is not None:
+            row.loc[0, col] = matched_category
+        else:
             row.loc[0, col] = "Other"
 
     # One-hot encode categorical columns
