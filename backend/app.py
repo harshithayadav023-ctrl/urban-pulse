@@ -1,52 +1,39 @@
-
+import os
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import joblib
 import numpy as np
 import pandas as pd
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --------------------------------------------------
 # 1. PROJECT FILE LOCATIONS
 # --------------------------------------------------
-from pathlib import Path
-from datetime import datetime
-from typing import Optional
+# On your laptop the folder is found automatically.
+# On Kaggle/Colab set the environment variable URBAN_DIR to the folder that
+# contains models/, common_data_corrected/ and outputs/.
 
-import joblib
-import numpy as np
-import pandas as pd
+PROJECT_DIR = Path(os.getenv("C:\\Users\\NIKHITHA NAIDU\\OneDrive\\Desktop\\SDC PROJECT", Path(__file__).resolve().parent.parent))
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from huggingface_hub import hf_hub_download
-
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-
-MODEL_FILENAME = "harshitha_random_forest.pkl"
-HF_REPO_ID = "Sdc2026/urbanpulse-random-forest"
-
-LOCAL_MODEL_PATH = PROJECT_DIR / "models" / MODEL_FILENAME
+MODEL_PATH = PROJECT_DIR / "models" / "harshitha_random_forest.pkl"
 PREP_PATH = PROJECT_DIR / "common_data_corrected" / "prep_info.pkl"
 PRIORITY_PATH = PROJECT_DIR / "outputs" / "clustering_prioritization_results.csv"
+
+# Late / on-time cut-off. 0.5 is the default; use the threshold you chose
+# from your threshold table (for example 0.45).
+THRESHOLD = 0.5
 
 # --------------------------------------------------
 # 2. LOAD MODEL AND PREPROCESSING INFORMATION
 # --------------------------------------------------
-if LOCAL_MODEL_PATH.exists():
-    MODEL_PATH = LOCAL_MODEL_PATH
-else:
-    MODEL_PATH = Path(
-        hf_hub_download(
-            repo_id=HF_REPO_ID,
-            filename=MODEL_FILENAME,
-            repo_type="model"
-        )
-    )
+
+if not MODEL_PATH.exists():
+    raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
 
 if not PREP_PATH.exists():
     raise FileNotFoundError(f"Preprocessing file not found: {PREP_PATH}")
@@ -61,7 +48,13 @@ fill_values = prep_info["fill_values"]
 keep_categories = prep_info["keep_categories"]
 model_columns = prep_info["columns"]
 
+# The inputs a user can actually give (the rest are derived from them)
+USER_FIELDS = ["case_topic", "report_source", "neighborhood",
+               "public_works_district", "latitude", "longitude", "open_date"]
 
+# Boston area, used in training to remove wrong coordinates
+LAT_RANGE = (42.2, 42.45)
+LON_RANGE = (-71.2, -70.99)
 
 # --------------------------------------------------
 # 3. CREATE FASTAPI APPLICATION
@@ -70,24 +63,37 @@ model_columns = prep_info["columns"]
 app = FastAPI(
     title="UrbanPulse AI API",
     description="API for predicting late Boston 311 complaints",
-    version="1.0.0"
+    version="1.1.0"
+)
+
+# Needed so the dashboard (HTML/JS) can call this API with fetch()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --------------------------------------------------
-# 4. DEFINE INPUT FORMAT
+# 4. DEFINE INPUT FORMAT  (every field is optional)
 # --------------------------------------------------
 
 class ComplaintInput(BaseModel):
-    open_date: datetime
+    open_date: Optional[datetime] = None          # default = now
 
     case_topic: Optional[str] = None
     service_name: Optional[str] = None
-    report_source: str
-    neighborhood: str
-    public_works_district: str
+    report_source: Optional[str] = None
+    neighborhood: Optional[str] = None
+    public_works_district: Optional[Union[str, int]] = None   # "5" or 5 both work
 
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+
+
+def to_dict(model_obj):
+    # works with pydantic v2 (model_dump) and v1 (dict)
+    return model_obj.model_dump() if hasattr(model_obj, "model_dump") else model_obj.dict()
 
 # --------------------------------------------------
 # 5. PREPROCESS INCOMING COMPLAINT
@@ -95,19 +101,33 @@ class ComplaintInput(BaseModel):
 
 def preprocess_input(data: ComplaintInput):
 
-    complaint = data.model_dump()
+    complaint = to_dict(data)
 
     # Use service_name if case_topic is not provided,
     # matching the original preprocessing notebook.
     if not complaint.get("case_topic"):
         complaint["case_topic"] = complaint.get("service_name")
 
-    # Parse date
-    open_date = pd.to_datetime(
-        complaint["open_date"],
-        errors="coerce",
-        utc=True
-    )
+    # Which inputs did the user really give? (used for the reliability note)
+    missing = [f for f in USER_FIELDS
+               if f != "open_date" and complaint.get(f) in (None, "")]
+
+    # Clean values the same way as in training
+    if complaint.get("neighborhood") == "Boston":
+        complaint["neighborhood"] = None
+        if "neighborhood" not in missing:
+            missing.append("neighborhood")
+    if complaint.get("public_works_district") is not None:
+        complaint["public_works_district"] = str(complaint["public_works_district"])
+    lat, lon = complaint.get("latitude"), complaint.get("longitude")
+    if lat is not None and lon is not None:
+        if not (LAT_RANGE[0] <= lat <= LAT_RANGE[1] and LON_RANGE[0] <= lon <= LON_RANGE[1]):
+            complaint["latitude"] = complaint["longitude"] = None   # outside Boston -> filled later
+            missing += [f for f in ("latitude", "longitude") if f not in missing]
+
+    # Parse date (default = now)
+    raw_date = complaint.get("open_date") or datetime.utcnow()
+    open_date = pd.to_datetime(raw_date, errors="coerce", utc=True)
 
     if pd.isna(open_date):
         raise ValueError("Invalid open_date")
@@ -119,79 +139,39 @@ def preprocess_input(data: ComplaintInput):
     complaint["hour_sin"] = np.sin(2 * np.pi * hour / 24)
     complaint["hour_cos"] = np.cos(2 * np.pi * hour / 24)
 
-    complaint["weekday_sin"] = np.sin(
-        2 * np.pi * weekday / 7
-    )
-    complaint["weekday_cos"] = np.cos(
-        2 * np.pi * weekday / 7
-    )
+    complaint["weekday_sin"] = np.sin(2 * np.pi * weekday / 7)
+    complaint["weekday_cos"] = np.cos(2 * np.pi * weekday / 7)
 
     complaint["is_weekend"] = int(weekday >= 5)
 
     # Keep only the original model input features
-    row = pd.DataFrame([{
-        col: complaint.get(col)
-        for col in feature_cols
-    }])
+    row = pd.DataFrame([{col: complaint.get(col) for col in feature_cols}])
 
     # Convert numerical columns and fill missing values
     for col in num_cols:
-        row[col] = pd.to_numeric(
-            row[col], errors="coerce"
-        )
+        row[col] = pd.to_numeric(row[col], errors="coerce")
+        row[col] = row[col].fillna(fill_values[col])
 
-        row[col] = row[col].fillna(
-            fill_values[col]
-        )
-
-    
-    # Fill missing categorical values and match categories
-    # without considering uppercase/lowercase differences.
+    # Fill missing categorical values
+    notes = []
     for col in cat_cols:
+        row[col] = row[col].fillna("Unknown").astype(str).str.strip()
 
-        row[col] = (
-            row[col]
-            .fillna("Unknown")
-            .astype(str)
-            .str.strip()
-        )
-
-        # Categories saved during training
+        # Match the rare-category handling during training
         allowed = keep_categories[col]
 
-        # Create a case-insensitive lookup while preserving
-        # the original spelling used during model training.
-        category_lookup = {
-            str(category).strip().casefold(): category
-            for category in allowed
-        }
-
-        input_value = row.loc[0, col]
-
-        # Match the input to its original training category
-        matched_category = category_lookup.get(
-            str(input_value).strip().casefold()
-        )
-
-        if matched_category is not None:
-            row.loc[0, col] = matched_category
-        else:
+        if row.loc[0, col] not in allowed:
+            if row.loc[0, col] != "Unknown":
+                notes.append(f"{col} '{row.loc[0, col]}' was not in the training data, so it was treated as 'Other'")
             row.loc[0, col] = "Other"
 
     # One-hot encode categorical columns
-    row = pd.get_dummies(
-        row,
-        columns=cat_cols,
-        dtype=np.int8
-    )
+    row = pd.get_dummies(row, columns=cat_cols, dtype=np.int8)
 
     # Match the exact training feature columns and order
-    row = row.reindex(
-        columns=model_columns,
-        fill_value=0
-    )
+    row = row.reindex(columns=model_columns, fill_value=0)
 
-    return row
+    return row, missing, notes
 
 # --------------------------------------------------
 # 6. HOME / HEALTH ENDPOINT
@@ -204,6 +184,16 @@ def home():
         "status": "running"
     }
 
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/options")
+def options():
+    # Values the model knows. Use these to fill the dropdowns in the dashboard.
+    return {col: sorted(keep_categories[col]) for col in cat_cols}
+
 # --------------------------------------------------
 # 7. PREDICTION ENDPOINT
 # --------------------------------------------------
@@ -212,41 +202,36 @@ def home():
 def predict_complaint(data: ComplaintInput):
 
     try:
-        processed_data = preprocess_input(data)
+        processed_data, missing, notes = preprocess_input(data)
 
-        prediction = int(model.predict(processed_data)[0])
-
-        probability = model.predict_proba(
-            processed_data
-        )[0]
+        probability = model.predict_proba(processed_data)[0]
 
         classes = list(model.classes_)
         late_index = classes.index(1)
 
         late_probability = float(probability[late_index])
+        prediction = int(late_probability >= THRESHOLD)
 
-        result = (
-            "Late"
-            if prediction == 1
-            else "On time"
-        )
+        result = "Late" if prediction == 1 else "On time"
+
+        # simple reliability note: fewer inputs -> less reliable
+        given = 6 - len([m for m in missing if m != "open_date"])
+        reliability = "High" if given >= 5 else "Medium" if given >= 3 else "Low"
 
         return {
             "prediction": prediction,
             "result": result,
-            "late_probability": round(
-                late_probability, 4
-            ),
-            "on_time_probability": round(
-                1 - late_probability, 4
-            )
+            "late_probability": round(late_probability, 4),
+            "on_time_probability": round(1 - late_probability, 4),
+            "threshold": THRESHOLD,
+            "missing_fields": missing,
+            "inputs_given": f"{given} of 6",
+            "reliability": reliability,
+            "notes": notes,
         }
 
     except Exception as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error)
-        )
+        raise HTTPException(status_code=400, detail=str(error))
 
 # --------------------------------------------------
 # 8. PRIORITY ENDPOINT
@@ -261,14 +246,17 @@ def get_priorities(limit: int = 10):
             detail="Prioritisation results file not found"
         )
 
-    if limit < 1 or limit > 218:
-        raise HTTPException(
-            status_code=400,
-            detail="Limit must be between 1 and 218"
-        )
-
     priority_df = pd.read_csv(PRIORITY_PATH)
 
+    if limit < 1 or limit > len(priority_df):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Limit must be between 1 and {len(priority_df)}"
+        )
+
     result = priority_df.head(limit)
+
+    # empty (NaN) cells cannot be sent as JSON, so convert them to null
+    result = result.astype(object).where(pd.notna(result), None)
 
     return result.to_dict(orient="records")
