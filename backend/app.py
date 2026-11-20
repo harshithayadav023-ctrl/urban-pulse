@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Union
+from huggingface_hub import hf_hub_download
 
 import joblib
 import numpy as np
@@ -18,7 +19,9 @@ from pydantic import BaseModel
 # On Kaggle/Colab set the environment variable URBAN_DIR to the folder that
 # contains models/, common_data_corrected/ and outputs/.
 
-PROJECT_DIR = Path(os.getenv("C:\\Users\\NIKHITHA NAIDU\\OneDrive\\Desktop\\SDC PROJECT", Path(__file__).resolve().parent.parent))
+PROJECT_DIR = Path(
+    os.getenv("URBAN_DIR", str(Path(__file__).resolve().parent.parent))
+)
 
 MODEL_PATH = PROJECT_DIR / "models" / "harshitha_random_forest.pkl"
 PREP_PATH = PROJECT_DIR / "common_data_corrected" / "prep_info.pkl"
@@ -32,13 +35,29 @@ THRESHOLD = 0.5
 # 2. LOAD MODEL AND PREPROCESSING INFORMATION
 # --------------------------------------------------
 
-if not MODEL_PATH.exists():
-    raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
+# Download model from Hugging Face if it is not available locally
+if MODEL_PATH.exists():
+    model_file = MODEL_PATH
+else:
+    try:
+        model_file = hf_hub_download(
+            repo_id="Sdc2026/urbanpulse-random-forest",
+            filename="harshitha_random_forest.pkl",
+            token=os.getenv("HF_TOKEN") or None
+        )
+    except Exception as error:
+        raise RuntimeError(
+            f"Could not download model from Hugging Face: {error}"
+        )
 
+# Check preprocessing file
 if not PREP_PATH.exists():
-    raise FileNotFoundError(f"Preprocessing file not found: {PREP_PATH}")
+    raise FileNotFoundError(
+        f"Preprocessing file not found: {PREP_PATH}"
+    )
 
-model = joblib.load(MODEL_PATH)
+# Load model and preprocessing information
+model = joblib.load(model_file)
 prep_info = joblib.load(PREP_PATH)
 
 num_cols = prep_info["num_cols"]
