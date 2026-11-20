@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Union
 from huggingface_hub import hf_hub_download
+from pydantic import BaseModel, ConfigDict
 
 import joblib
 import numpy as np
@@ -108,6 +109,22 @@ class ComplaintInput(BaseModel):
 
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+
+    model_config = ConfigDict(
+    json_schema_extra={
+        "examples": [
+            {
+                "open_date": "2026-11-20T10:30:00",
+                "case_topic": "Pothole",
+                "report_source": "BOS311",
+                "neighborhood": "Allston",
+                "public_works_district": "1A",
+                "latitude": 42.36,
+                "longitude": -71.06
+            }
+        ]
+    }
+)
 
 
 def to_dict(model_obj):
